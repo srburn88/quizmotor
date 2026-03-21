@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Quiz Motor Challenge 🏎️</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏎️</text></svg>"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=Orbitron:wght@700;900&display=swap');
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{background:#0a0a0f;}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+const AI_NAMES = ["Schumacher Bot","Senna AI","Alonso CPU","Hamilton 2.0"];
+const ROUNDS_FREE = 3, ROUNDS_PREMIUM = 10, TIMER_MAX = 20, MAX_PTS = 1000;
+const COLORS = ["#f1c40f","#e74c3c","#2ecc71","#3498db"];
+const MEDALS = ["🥇","🥈","🥉","4️⃣"];
+const OPT_LABELS = ["A","B","C","D"];
+
+const LEVELS = [
+  {name:"Novato",min:0,icon:"🪛"},{name:"Piloto",min:500,icon:"🏎️"},
+  {name:"Pro",min:1500,icon:"🏁"},{name:"Campeón",min:3000,icon:"🏆"},{name:"Leyenda",min:6000,icon:"⭐"}
+];
+function getLevel(xp){let l=LEVELS[0];for(const v of LEVELS){if(xp>=v.min)l=v;}return l;}
+function getNextLevel(xp){for(const l of LEVELS){if(l.min>xp)return l;}return null;}
+function xpProgress(xp){const c=getLevel(xp),n=getNextLevel(xp);if(!n)return 100;return Math.round(((xp-c.min)/(n.min-c.min))*100);}
+
+const ACHIEVEMENTS = [
+  {id:"first_win",icon:"🏁",name:"Primera Victoria",desc:"Gana tu primera partida"},
+  {id:"streak3",icon:"🔥",name:"En Llamas",desc:"Consigue una racha de 3"},
+  {id:"streak5",icon:"💥",name:"Imparable",desc:"Consigue una racha de 5"},
+  {id:"perfect",icon:"💎",name:"Vuelta Perfecta",desc:"Acierta todas las preguntas"},
+  {id:"speed",icon:"⚡",name:"Relámpago",desc:"Responde en menos de 3s"},
+  {id:"beat_ai",icon:"🤖",name:"Doma la Máquina",desc:"Vence a la IA"},
+  {id:"win3",icon:"🏅",name:"Hat-trick",desc:"Gana 3 partidas"},
+  {id:"legend",icon:"⭐",name:"Leyenda",desc:"Alcanza el nivel Leyenda"},
+];
+
+// ── AUDIO ──
+function getCtx(){if(!window._qmcCtx){try{window._qmcCtx=new(window.AudioContext||window.webkitAudioContext)();}catch{}}return window._qmcCtx;}
+function playBeep(freq=440,dur=0.1,type="sine",vol=0.3){const c=getCtx();if(!c)return;const o=c.createOscillator(),g=c.createGain();o.type=type;o.frequency.value=freq;g.gain.setValueAtTime(vol,c.currentTime);g.gain.exponentialRampToValueAtTime(0.001,c.currentTime+dur);o.connect(g);g.connect(c.destination);o.start();o.stop(c.currentTime+dur);}
+function playCorrect(){playBeep(600,0.08,"sine",0.2);setTimeout(()=>playBeep(900,0.12,"sine",0.2),80);setTimeout(()=>playBeep(1200,0.15,"sine",0.18),180);}
+function playWrong(){playBeep(200,0.15,"sawtooth",0.25);setTimeout(()=>playBeep(150,0.2,"sawtooth",0.2),130);}
+function playClick(){playBeep(800,0.05,"square",0.15);}
+function playStreak(){[523,659,784,880].forEach((f,i)=>setTimeout(()=>playBeep(f,0.1,"sine",0.25),i*80));}
+function playAchievement(){[784,988,1175,1568].forEach((f,i)=>setTimeout(()=>playBeep(f,0.15,"sine",0.22),i*100));}
+function playLevelUp(){[523,659,784,1047,1319].forEach((f,i)=>setTimeout(()=>playBeep(f,0.18,"sine",0.28),i*120));}
+function playRevEngine(){[0,0.12,0.24,0.4].forEach((t,i)=>{setTimeout(()=>{const f=80+i*120;playBeep(f,0.1,"sawtooth",0.18);playBeep(f*2,0.08,"square",0.08);},t*1000);});}
+function playVictory(){[523,659,784,1047].forEach((f,i)=>setTimeout(()=>playBeep(f,0.18,"sine",0.22),i*120));}
+function playTick(){playBeep(1000,0.03,"square",0.08);}
+function playUrgent(){playBeep(400,0.06,"square",0.2);setTimeout(()=>playBeep(400,0.06,"square",0.2),100);}
+
+// ── BANCO DE PREGUNTAS ──
+const ALL_QUESTIONS = [
+  {"q":"¿En qué año Michael Schumacher ganó su primer campeonato del mundo de F1?","opts":["1992","1994","1996","1998"],"ans":1,"cat":"F1"},
+  {"q":"¿Cuántos campeonatos mundiales de F1 ganó Ayrton Senna?","opts":["2","3","4","5"],"ans":1,"cat":"F1"},
+  {"q":"¿Con qué equipo ganó Lewis Hamilton su primer título de F1?","opts":["Ferrari","McLaren","Mercedes","Renault"],"ans":1,"cat":"F1"},
+  {"q":"¿Quién fue el piloto más joven en ganar el campeonato del mundo de F1?","opts":["Fernando Alonso","Kimi Räikkönen","Sebastian Vettel","Lewis Hamilton"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuántos títulos mundiales de F1 acumula Lewis Hamilton?","opts":["5","6","7","8"],"ans":2,"cat":"F1"},
+  {"q":"¿En qué año ganó Fernando Alonso su primer campeonato de F1?","opts":["2003","2004","2005","2006"],"ans":2,"cat":"F1"},
+  {"q":"¿Qué piloto ganó el campeonato de F1 en 2021?","opts":["Lewis Hamilton","Valtteri Bottas","Max Verstappen","Lando Norris"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuántas victorias consecutivas logró Sebastian Vettel en la temporada 2013?","opts":["7","8","9","10"],"ans":2,"cat":"F1"},
+  {"q":"¿Quién fue el primer piloto en ganar 4 campeonatos consecutivos de F1?","opts":["Michael Schumacher","Juan Manuel Fangio","Sebastian Vettel","Alain Prost"],"ans":2,"cat":"F1"},
+  {"q":"¿Con qué escudería ganó Kimi Räikkönen su único título de F1?","opts":["McLaren","Lotus","Ferrari","Sauber"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuántos campeonatos de F1 ganó Juan Manuel Fangio?","opts":["3","4","5","6"],"ans":2,"cat":"F1"},
+  {"q":"¿En qué año Nico Rosberg ganó el campeonato del mundo de F1?","opts":["2014","2015","2016","2017"],"ans":2,"cat":"F1"},
+  {"q":"¿Qué piloto ganó el campeonato de F1 en 1992 con Williams?","opts":["Ayrton Senna","Alain Prost","Nigel Mansell","Damon Hill"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuántos títulos de F1 ganó Alain Prost a lo largo de su carrera?","opts":["3","4","5","6"],"ans":1,"cat":"F1"},
+  {"q":"¿Cuál es la longitud oficial del circuito de Mónaco?","opts":["3,337 km","3,517 km","3,640 km","3,812 km"],"ans":1,"cat":"F1"},
+  {"q":"¿En qué país se encuentra el Circuito de Spa-Francorchamps?","opts":["Países Bajos","Francia","Alemania","Bélgica"],"ans":3,"cat":"F1"},
+  {"q":"¿En qué año se inauguró el Circuito de Silverstone como sede del GP de Gran Bretaña?","opts":["1948","1950","1952","1955"],"ans":1,"cat":"F1"},
+  {"q":"¿Cómo se llama la famosa curva de 180 grados del circuito de Spa?","opts":["Pouhon","Raidillon","Eau Rouge","La Source"],"ans":3,"cat":"F1"},
+  {"q":"¿En qué ciudad se disputa el Gran Premio de Italia de F1?","opts":["Roma","Milán","Monza","Turín"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuál es la curva más famosa del circuito de Suzuka?","opts":["Degner","Casio Triangle","Spoon","130R"],"ans":3,"cat":"F1"},
+  {"q":"¿En qué año se añadió el Gran Premio de Abu Dhabi al calendario de F1?","opts":["2007","2008","2009","2010"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuál es el apodo del circuito de Nürburgring Nordschleife?","opts":["El Infierno Verde","El Dragón","La Serpiente","El Diablo"],"ans":0,"cat":"F1"},
+  {"q":"¿En qué año se disputó por primera vez el GP de Singapur nocturno?","opts":["2006","2007","2008","2009"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuántos cilindros tenía el motor Ferrari F2004 de Schumacher?","opts":["8","10","12","16"],"ans":1,"cat":"F1"},
+  {"q":"¿Qué significa la sigla DRS en Fórmula 1?","opts":["Dynamic Racing System","Drag Reduction System","Direct Response Steering","Dual Rear Suspension"],"ans":1,"cat":"F1"},
+  {"q":"¿En qué año se introdujo el sistema KERS en la Fórmula 1?","opts":["2007","2008","2009","2010"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuántos litros desplaza el motor actual V6 turbo híbrido de F1?","opts":["1.0","1.5","1.6","2.0"],"ans":2,"cat":"F1"},
+  {"q":"¿Qué escudería introdujo el concepto de doble difusor en 2009?","opts":["Red Bull","McLaren","Brawn GP","Ferrari"],"ans":2,"cat":"F1"},
+  {"q":"¿En qué año se prohibieron los repostajes durante las carreras de F1?","opts":["2008","2009","2010","2011"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuántos revoluciones por minuto alcanzaba el motor Ferrari V10 de 2004?","opts":["16.000","18.000","19.000","20.000"],"ans":3,"cat":"F1"},
+  {"q":"¿Qué escudería ganó el primer campeonato de constructores de F1 en 1958?","opts":["Ferrari","Vanwall","Cooper","BRM"],"ans":1,"cat":"F1"},
+  {"q":"¿Cuántos campeonatos de constructores ha ganado Ferrari en F1?","opts":["12","14","16","18"],"ans":2,"cat":"F1"},
+  {"q":"¿En qué año se fundó la escudería McLaren?","opts":["1958","1963","1966","1970"],"ans":1,"cat":"F1"},
+  {"q":"¿Cuántos campeonatos de constructores ha ganado Williams en F1?","opts":["5","7","9","11"],"ans":2,"cat":"F1"},
+  {"q":"¿Qué motor usaba Benetton cuando Schumacher ganó su primer título en 1994?","opts":["Renault","Ford Cosworth","Mercedes","Ferrari"],"ans":1,"cat":"F1"},
+  {"q":"¿Cuántos campeonatos de constructores ha ganado Red Bull Racing?","opts":["4","5","6","7"],"ans":3,"cat":"F1"},
+  {"q":"¿En qué año murió Ayrton Senna en el Gran Premio de San Marino?","opts":["1992","1993","1994","1995"],"ans":2,"cat":"F1"},
+  {"q":"¿En qué circuito tuvo lugar el accidente mortal de Ayrton Senna?","opts":["Mónaco","Silverstone","Imola","Spa"],"ans":2,"cat":"F1"},
+  {"q":"¿En qué año se disputó la primera temporada oficial del Campeonato del Mundo de F1?","opts":["1948","1950","1952","1954"],"ans":1,"cat":"F1"},
+  {"q":"¿En qué circuito tuvo lugar la batalla entre Senna y Prost en 1989?","opts":["Mónaco","Suzuka","Spa","Monza"],"ans":1,"cat":"F1"},
+  {"q":"¿Cuántos puntos vale una victoria en el sistema actual de puntos de F1?","opts":["10","15","25","30"],"ans":2,"cat":"F1"},
+  {"q":"¿Qué piloto ganó el Gran Premio de Mónaco 5 veces consecutivas?","opts":["Michael Schumacher","Ayrton Senna","Graham Hill","Stirling Moss"],"ans":1,"cat":"F1"},
+  {"q":"¿En qué año se introdujo el Safety Car de manera oficial en F1?","opts":["1990","1992","1993","1995"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuántos puntos se dan por la vuelta rápida en F1 desde 2019?","opts":["0","1","2","3"],"ans":1,"cat":"F1"},
+  {"q":"¿Qué piloto es conocido como 'El Profesor' en F1?","opts":["Ayrton Senna","Michael Schumacher","Alain Prost","Nelson Piquet"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuántos Grandes Premios ganó Ayrton Senna a lo largo de su carrera?","opts":["41","65","76","82"],"ans":1,"cat":"F1"},
+  {"q":"¿Cuántos Grandes Premios conformaban el primer campeonato de F1 de 1950?","opts":["5","6","7","8"],"ans":2,"cat":"F1"},
+  {"q":"¿Qué piloto ganó el Gran Premio inaugural de F1 en 1950?","opts":["Juan Manuel Fangio","Giuseppe Farina","Alberto Ascari","Luigi Fagioli"],"ans":1,"cat":"F1"},
+  {"q":"¿Cuántas vueltas tiene el Gran Premio de Mónaco?","opts":["64","72","78","82"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuál es la longitud del circuito de Monza?","opts":["4,921 km","5,185 km","5,403 km","5,720 km"],"ans":1,"cat":"F1"},
+  {"q":"¿En qué año Sébastien Loeb ganó su noveno título de WRC consecutivo?","opts":["2010","2011","2012","2013"],"ans":2,"cat":"Rally"},
+  {"q":"¿Qué coche pilotó Carlos Sainz para ganar el Rally Dakar en 2020?","opts":["Mini","Toyota","Peugeot","MINI JCW Buggy"],"ans":3,"cat":"Rally"},
+  {"q":"¿Cuántos títulos de WRC ha ganado Sébastien Loeb?","opts":["7","8","9","10"],"ans":2,"cat":"Rally"},
+  {"q":"¿Con qué marca ganó Tommi Mäkinen sus 4 títulos de WRC?","opts":["Ford","Subaru","Mitsubishi","Toyota"],"ans":2,"cat":"Rally"},
+  {"q":"¿En qué año se disputó por primera vez el Rally de Montecarlo?","opts":["1911","1921","1930","1950"],"ans":0,"cat":"Rally"},
+  {"q":"¿En qué año comenzó el campeonato del mundo de rally WRC?","opts":["1970","1973","1977","1980"],"ans":1,"cat":"Rally"},
+  {"q":"¿Con qué marca ganó Carlos Sainz sus dos títulos de WRC?","opts":["Toyota","Ford","Subaru","Mitsubishi"],"ans":1,"cat":"Rally"},
+  {"q":"¿Cuántos CV tenía el mítico Lancia Delta S4 Grupo B?","opts":["400","500","600","700"],"ans":2,"cat":"Rally"},
+  {"q":"¿En qué año se prohibieron los coches Grupo B en el WRC?","opts":["1984","1986","1988","1990"],"ans":1,"cat":"Rally"},
+  {"q":"¿Quién fue el primer piloto en ganar el Rally Dakar en moto y en coche?","opts":["Stéphane Peterhansel","Ari Vatanen","Carlos Sainz","Sébastien Loeb"],"ans":0,"cat":"Rally"},
+  {"q":"¿Cuántas veces ha ganado Stéphane Peterhansel el Rally Dakar?","opts":["10","12","14","16"],"ans":2,"cat":"Rally"},
+  {"q":"¿En qué continente se disputa actualmente el Rally Dakar?","opts":["África","Asia","América del Sur","Arabia Saudí"],"ans":3,"cat":"Rally"},
+  {"q":"¿Qué piloto ganó el WRC con Volkswagen Polo entre 2013 y 2016?","opts":["Jari-Matti Latvala","Sébastien Ogier","Andreas Mikkelsen","Thierry Neuville"],"ans":1,"cat":"Rally"},
+  {"q":"¿Con qué coche Peugeot dominó el WRC en 2002 y 2003?","opts":["206 WRC","207 WRC","307 WRC","208 WRC"],"ans":0,"cat":"Rally"},
+  {"q":"¿Qué tipo de tracción usan los coches de WRC modernos?","opts":["Delantera","Trasera","Integral 4WD","Trasera con LSD"],"ans":2,"cat":"Rally"},
+  {"q":"¿Qué escudería ganó el WRC de constructores en 2022?","opts":["Toyota","Hyundai","Ford","Citroën"],"ans":0,"cat":"Rally"},
+  {"q":"¿Cuántos títulos de MotoGP ha ganado Valentino Rossi en total?","opts":["7","8","9","10"],"ans":2,"cat":"MotoGP"},
+  {"q":"¿Con qué moto ganó Marc Márquez su primer título de MotoGP?","opts":["Honda RC213V","Yamaha YZR-M1","Ducati Desmosedici","Honda CBR"],"ans":0,"cat":"MotoGP"},
+  {"q":"¿Cuántos títulos de MotoGP tiene Marc Márquez?","opts":["6","7","8","9"],"ans":2,"cat":"MotoGP"},
+  {"q":"¿Con qué marca ganó Casey Stoner el título de MotoGP en 2007?","opts":["Honda","Yamaha","Ducati","Suzuki"],"ans":2,"cat":"MotoGP"},
+  {"q":"¿En qué año se cambió la categoría de 500cc a MotoGP con motos de 4 tiempos?","opts":["2000","2001","2002","2003"],"ans":2,"cat":"MotoGP"},
+  {"q":"¿Qué piloto ganó el primer título de la era MotoGP en 2002?","opts":["Valentino Rossi","Max Biaggi","Loris Capirossi","Alex Barros"],"ans":0,"cat":"MotoGP"},
+  {"q":"¿Cuántos cilindros tiene el motor de una MotoGP moderna?","opts":["2","3","4","6"],"ans":2,"cat":"MotoGP"},
+  {"q":"¿En qué año Fabio Quartararo ganó el campeonato de MotoGP?","opts":["2019","2020","2021","2022"],"ans":2,"cat":"MotoGP"},
+  {"q":"¿Cuál es la cilindrada máxima permitida en MotoGP?","opts":["800cc","900cc","1000cc","1200cc"],"ans":2,"cat":"MotoGP"},
+  {"q":"¿Cuántos títulos de MotoGP ganó Jorge Lorenzo?","opts":["2","3","4","5"],"ans":1,"cat":"MotoGP"},
+  {"q":"¿Con qué marca ganó Valentino Rossi sus primeros títulos en la clase reina?","opts":["Yamaha","Ducati","Honda","Aprilia"],"ans":2,"cat":"MotoGP"},
+  {"q":"¿Cuántas victorias tiene Valentino Rossi en MotoGP/500cc?","opts":["89","105","113","121"],"ans":1,"cat":"MotoGP"},
+  {"q":"¿En qué año debutó en MotoGP Marc Márquez?","opts":["2011","2012","2013","2014"],"ans":1,"cat":"MotoGP"},
+  {"q":"¿Qué piloto ganó el campeonato de MotoGP en 2015?","opts":["Marc Márquez","Valentino Rossi","Jorge Lorenzo","Dani Pedrosa"],"ans":2,"cat":"MotoGP"},
+  {"q":"¿Cuántas veces fue subcampeón del mundo Dani Pedrosa en MotoGP?","opts":["1","2","3","4"],"ans":2,"cat":"MotoGP"},
+  {"q":"¿Cuántas veces ha ganado Audi las 24 Horas de Le Mans?","opts":["11","13","15","17"],"ans":1,"cat":"Le Mans"},
+  {"q":"¿En qué año se celebró por primera vez las 24 Horas de Le Mans?","opts":["1920","1923","1925","1928"],"ans":1,"cat":"Le Mans"},
+  {"q":"¿Qué coche ganó las 24 Horas de Le Mans en 1966, 67, 68 y 69?","opts":["Ferrari 330","Porsche 917","Ford GT40","Matra"],"ans":2,"cat":"Le Mans"},
+  {"q":"¿Cuántos pilotos comparte cada coche en las 24 Horas de Le Mans?","opts":["1","2","3","4"],"ans":2,"cat":"Le Mans"},
+  {"q":"¿Qué piloto ha ganado más veces las 24 Horas de Le Mans?","opts":["Tom Kristensen","Jacky Ickx","Derek Bell","Allan McNish"],"ans":0,"cat":"Le Mans"},
+  {"q":"¿Cuántas victorias tiene Tom Kristensen en Le Mans?","opts":["7","8","9","10"],"ans":2,"cat":"Le Mans"},
+  {"q":"¿En qué año Toyota ganó por primera vez las 24 Horas de Le Mans?","opts":["2016","2017","2018","2019"],"ans":2,"cat":"Le Mans"},
+  {"q":"¿Cuántas victorias tiene la marca Porsche en las 24 Horas de Le Mans?","opts":["16","18","19","21"],"ans":2,"cat":"Le Mans"},
+  {"q":"¿Qué modelo de Porsche ganó Le Mans en 1970?","opts":["908","917","911 RSR","914"],"ans":1,"cat":"Le Mans"},
+  {"q":"¿Qué marca ganó Le Mans 4 veces consecutivas entre 1992 y 1995?","opts":["Porsche","McLaren","Peugeot","Toyota"],"ans":1,"cat":"Le Mans"},
+  {"q":"¿Qué marca ganó Le Mans en 2023 en su regreso oficial?","opts":["Toyota","Ferrari","Porsche","Cadillac"],"ans":1,"cat":"Le Mans"},
+  {"q":"¿Cuántos km aproximados se recorren en 24 horas en Le Mans?","opts":["3.500 km","4.000 km","5.000 km","5.500 km"],"ans":2,"cat":"Le Mans"},
+  {"q":"¿Cómo se llama la famosa recta del circuito de Le Mans?","opts":["Recta del Miedo","Mistral","Mulsanne","Hunaudieres"],"ans":3,"cat":"Le Mans"},
+  {"q":"¿Qué marca japonesa ganó Le Mans por primera vez en 1991 con motor rotativo?","opts":["Toyota","Honda","Nissan","Mazda"],"ans":3,"cat":"Le Mans"},
+  {"q":"¿Cuántos caballos de potencia tiene aproximadamente el Bugatti Chiron?","opts":["1000","1200","1500","1800"],"ans":2,"cat":"Coches"},
+  {"q":"¿En qué año se presentó el primer Porsche 911?","opts":["1960","1963","1966","1968"],"ans":1,"cat":"Coches"},
+  {"q":"¿En qué año se lanzó el primer McLaren F1 de calle?","opts":["1990","1992","1994","1996"],"ans":1,"cat":"Coches"},
+  {"q":"¿Cuántos cilindros tiene el motor del Dodge Viper original?","opts":["8","10","12","16"],"ans":1,"cat":"Coches"},
+  {"q":"¿En qué año se presentó el Lamborghini Miura?","opts":["1964","1966","1968","1970"],"ans":1,"cat":"Coches"},
+  {"q":"¿Cuál es la velocidad máxima oficial del Bugatti Veyron Super Sport?","opts":["407 km/h","415 km/h","431 km/h","445 km/h"],"ans":0,"cat":"Coches"},
+  {"q":"¿Qué marca fabrica el superdeportivo llamado 'Huracán'?","opts":["Ferrari","Maserati","Lamborghini","Pagani"],"ans":2,"cat":"Coches"},
+  {"q":"¿Cuántos CV tiene el Koenigsegg Jesko Absolut?","opts":["1.200","1.400","1.600","1.800"],"ans":2,"cat":"Coches"},
+  {"q":"¿En qué año se fundó la marca Ferrari?","opts":["1939","1943","1947","1950"],"ans":2,"cat":"Coches"},
+  {"q":"¿Cuántos CV tiene el Porsche 918 Spyder híbrido?","opts":["770","887","920","960"],"ans":1,"cat":"Coches"},
+  {"q":"¿Cuántos ejemplares del McLaren F1 se fabricaron en total?","opts":["64","106","213","350"],"ans":1,"cat":"Coches"},
+  {"q":"¿Qué motor lleva el Mercedes-AMG One de calle?","opts":["V8 biturbo","V6 turbo híbrido F1","V12 biturbo","V8 turbo híbrido"],"ans":1,"cat":"Coches"},
+  {"q":"¿En qué país se fabrica el Pagani?","opts":["Francia","Alemania","Italia","España"],"ans":2,"cat":"Coches"},
+  {"q":"¿En qué año se fabricó el Ferrari F40?","opts":["1985","1987","1988","1990"],"ans":2,"cat":"Coches"},
+  {"q":"¿Cuántos CV tiene el motor del Ferrari SF90 Stradale?","opts":["850","920","986","1000"],"ans":2,"cat":"Coches"},
+  {"q":"¿En qué año se fundó Lamborghini como marca de coches?","opts":["1958","1961","1963","1965"],"ans":2,"cat":"Coches"},
+  {"q":"¿Cuántas victorias en NASCAR tiene Richard Petty, conocido como 'El Rey'?","opts":["150","175","200","225"],"ans":2,"cat":"NASCAR"},
+  {"q":"¿Cuántas millas tiene la carrera Daytona 500?","opts":["400","450","500","600"],"ans":2,"cat":"NASCAR"},
+  {"q":"¿En qué año se disputó la primera edición de las Daytona 500?","opts":["1955","1959","1963","1967"],"ans":1,"cat":"NASCAR"},
+  {"q":"¿Qué piloto ganó 7 campeonatos de NASCAR Cup Series?","opts":["Dale Earnhardt","Jeff Gordon","Jimmie Johnson","Richard Petty"],"ans":2,"cat":"NASCAR"},
+  {"q":"¿Cuántas vueltas tiene la Indy 500 en el óvalo de Indianápolis?","opts":["150","175","200","225"],"ans":2,"cat":"NASCAR"},
+  {"q":"¿Cuántas millas tiene el óvalo de Indianápolis?","opts":["1,5 millas","2 millas","2,5 millas","3 millas"],"ans":2,"cat":"NASCAR"},
+  {"q":"¿Cuántos cilindros tiene el motor de un coche de NASCAR Cup Series?","opts":["6","8","10","12"],"ans":1,"cat":"NASCAR"},
+  {"q":"¿Qué piloto ganó 4 veces la Indy 500?","opts":["AJ Foyt","Mario Andretti","Al Unser Sr","Rick Mears"],"ans":0,"cat":"NASCAR"},
+  {"q":"¿Qué dos marcas suministran motores en IndyCar actualmente?","opts":["Ford y GM","Honda y Chevrolet","Toyota y Ford","Honda y Toyota"],"ans":1,"cat":"NASCAR"},
+  {"q":"¿Cuántas victorias en Daytona 500 tiene Richard Petty?","opts":["5","6","7","8"],"ans":2,"cat":"NASCAR"},
+  {"q":"¿Qué piloto es el único en haber ganado la triple corona del motor (F1, Indy 500, Le Mans)?","opts":["Mario Andretti","Graham Hill","Jackie Stewart","Jim Clark"],"ans":1,"cat":"F1"},
+  {"q":"¿En qué año en Mario Andretti ganó el campeonato del mundo de F1?","opts":["1976","1977","1978","1979"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuántos tipos de compuesto seco ofrece Pirelli en una carrera de F1?","opts":["2","3","5","6"],"ans":2,"cat":"F1"},
+  {"q":"¿Qué compuesto de Pirelli es el más blando en F1?","opts":["Amarillo (medium)","Rojo (soft)","Blanco (hard)","Rosa (hypersoft)"],"ans":1,"cat":"F1"},
+  {"q":"¿Cuántos mecánicos cambian neumáticos en un pit stop de F1 por rueda?","opts":["2","3","4","6"],"ans":1,"cat":"F1"},
+  {"q":"¿Qué temperatura alcanzan los frenos de carbono de un F1?","opts":["400°C","600°C","800°C","1000°C"],"ans":3,"cat":"F1"},
+  {"q":"¿Qué significa el término 'undercut' en una carrera de F1?","opts":["Parar antes que el rival para ganar tiempo en pista limpia","Adelantamiento por el interior","Sistema de frenada avanzado","Configuración aerodinámica con suelo plano"],"ans":0,"cat":"F1"},
+  {"q":"¿Cuántas ruedas tiene el Tyrrell P34 de F1 que compitió en 1976-77?","opts":["4","5","6","8"],"ans":2,"cat":"F1"},
+  {"q":"¿Qué escudería usó el famoso efecto suelo con gran éxito en 1978?","opts":["Ferrari","McLaren","Lotus","Williams"],"ans":2,"cat":"F1"},
+  {"q":"¿En qué año se introdujo el casco HANS en F1 de manera obligatoria?","opts":["2001","2003","2005","2007"],"ans":0,"cat":"F1"},
+  {"q":"¿Cuántos caballos de potencia genera aproximadamente un motor de F1 moderno?","opts":["700","850","1000","1100"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuál es el récord de pit stop más rápido en F1?","opts":["1,82 seg","2,05 seg","2,31 seg","1,55 seg"],"ans":3,"cat":"F1"},
+  {"q":"¿Qué fuerza G experimenta un piloto de F1 en una curva rápida?","opts":["2-3 G","4-5 G","6-7 G","8-9 G"],"ans":1,"cat":"F1"},
+  {"q":"¿Cuántos km/h tarda un F1 de 0 a 300 km/h?","opts":["9 segundos","11 segundos","13 segundos","15 segundos"],"ans":1,"cat":"F1"},
+  {"q":"¿En qué año Niki Lauda sufrió su terrible accidente en el Nürburgring?","opts":["1974","1975","1976","1977"],"ans":2,"cat":"F1"},
+  {"q":"¿Qué piloto británico ganó el campeonato de F1 en 1976?","opts":["James Hunt","Nigel Mansell","Damon Hill","Jenson Button"],"ans":0,"cat":"F1"},
+  {"q":"¿Contra quién disputó James Hunt el mítico campeonato de 1976?","opts":["Emerson Fittipaldi","Carlos Reutemann","Niki Lauda","Jody Scheckter"],"ans":2,"cat":"F1"},
+  {"q":"¿Cuántos días tardó Niki Lauda en volver a competir tras su accidente de 1976?","opts":["33","42","57","66"],"ans":2,"cat":"F1"},
+  {"q":"¿Qué piloto ganó el campeonato de F1 de manera póstuma en 1970?","opts":["Jim Clark","Bruce McLaren","Jochen Rindt","Pedro Rodríguez"],"ans":2,"cat":"F1"},
+  {"q":"¿Qué escudería ganó 6 campeonatos de constructores consecutivos entre 1992 y 1997?","opts":["Ferrari","McLaren","Williams","Benetton"],"ans":2,"cat":"F1"},
+  {"q":"¿Con qué marca ganó Marcus Grönholm sus 2 títulos de WRC?","opts":["Ford","Subaru","Peugeot","Toyota"],"ans":2,"cat":"Rally"},
+  {"q":"¿Qué piloto noruego fue campeón del mundo de rally en 1999?","opts":["Petter Solberg","Henning Solberg","Didier Auriol","Marcus Grönholm"],"ans":0,"cat":"Rally"},
+  {"q":"¿Con qué coche Subaru ganó Richard Burns el título de WRC en 2001?","opts":["Impreza WRC","Legacy RS","Forester XT","Impreza GT"],"ans":0,"cat":"Rally"},
+  {"q":"¿Cuántos CV tenía el Lancia Delta Integrale en su versión final?","opts":["185","210","250","300"],"ans":1,"cat":"Rally"},
+  {"q":"¿Qué marca dominó el WRC con el modelo Impreza durante los años 90?","opts":["Mitsubishi","Toyota","Subaru","Ford"],"ans":2,"cat":"Rally"},
+  {"q":"¿Cuántos títulos de MotoGP tiene Pecco Bagnaia?","opts":["1","2","3","4"],"ans":1,"cat":"MotoGP"},
+  {"q":"¿Con qué marca compite Pecco Bagnaia en MotoGP?","opts":["Honda","Yamaha","Ducati","Aprilia"],"ans":2,"cat":"MotoGP"},
+  {"q":"¿En qué circuito español se disputa el Gran Premio de Jerez de MotoGP?","opts":["Montmeló","Jerez de la Frontera","Valencia","Navarra"],"ans":1,"cat":"MotoGP"},
+  {"q":"¿Cuántos grados tiene la inclinación máxima de una MotoGP en curva?","opts":["50°","60°","65°","70°"],"ans":2,"cat":"MotoGP"},
+  {"q":"¿Cuál es la cilindrada de la categoría Moto3?","opts":["125cc","250cc","300cc","450cc"],"ans":1,"cat":"MotoGP"},
+  {"q":"¿Qué tipo de carburante usaban los prototipos Audi R18 en Le Mans?","opts":["Gasolina","Diésel","Hidrógeno","E-Fuel"],"ans":1,"cat":"Le Mans"},
+  {"q":"¿Cuántas ediciones de Le Mans ganó Jacky Ickx?","opts":["4","5","6","7"],"ans":2,"cat":"Le Mans"},
+  {"q":"¿En qué año se añadieron chicanes a la recta de Hunaudieres en Le Mans?","opts":["1985","1987","1990","1993"],"ans":2,"cat":"Le Mans"},
+  {"q":"¿Qué velocidad máxima alcanzaban los Porsche 917 en la recta de Le Mans?","opts":["320 km/h","350 km/h","380 km/h","420 km/h"],"ans":2,"cat":"Le Mans"},
+  {"q":"¿Qué año ganó el Bentley Speed 8 las 24 Horas de Le Mans?","opts":["2001","2002","2003","2004"],"ans":2,"cat":"Le Mans"},
+  {"q":"¿En qué categoría compitió el Mazda 787B que ganó Le Mans en 1991?","opts":["GTP","C1","Grupo C","LMP1"],"ans":2,"cat":"Le Mans"},
+  {"q":"¿Cuántos pistones tiene el motor rotativo Wankel del Mazda 787B?","opts":["0 sin pistones","2","4","6"],"ans":0,"cat":"Le Mans"},
+  {"q":"¿Cuántos CV tiene el SSC Tuatara?","opts":["1350","1750","2050","2750"],"ans":1,"cat":"Coches"},
+  {"q":"¿De qué material está fabricada la carrocería del McLaren F1 original?","opts":["Aluminio","Acero","Fibra de carbono","Titanio"],"ans":2,"cat":"Coches"},
+  {"q":"¿En qué ciudad se fabrican los Lamborghini?","opts":["Turín","Bolonia","Maranello","Sant'Agata Bolognese"],"ans":3,"cat":"Coches"},
+  {"q":"¿Cuántos cilindros tiene el motor del Pagani Huayra?","opts":["8","10","12","16"],"ans":2,"cat":"Coches"},
+  {"q":"¿Cuál es el 0-100 km/h del Rimac Nevera eléctrico?","opts":["1,5 seg","1,85 seg","2,1 seg","2,4 seg"],"ans":1,"cat":"Coches"},
+  {"q":"¿Cuántos CV tiene el Lamborghini Aventador SVJ?","opts":["700","759","770","800"],"ans":1,"cat":"Coches"},
+  {"q":"¿Qué motor lleva el Porsche 911 GT3 RS de última generación?","opts":["4.0L boxer 6 atmosférico","3.8L boxer 6 turbo","4.0L boxer 6 turbo","3.6L boxer 6 atmosférico"],"ans":0,"cat":"Coches"},
+  {"q":"¿Con qué motor nació el BMW M3 original en 1986?","opts":["S14 4 cilindros 2.3L","S38 6 cilindros","S50 6 cilindros","S54 6 cilindros"],"ans":0,"cat":"Coches"},
+  {"q":"¿Cuántos CV tiene el Mercedes-AMG One?","opts":["950","1.000","1.063","1.200"],"ans":2,"cat":"Coches"},
+  {"q":"¿Cuántos kg pesa el Ariel Atom 3.5R?","opts":["420 kg","550 kg","620 kg","700 kg"],"ans":0,"cat":"Coches"}
+];
+
+// ── STORAGE (localStorage para versión standalone) ──
+function loadJ(key,def){try{const r=localStorage.getItem(key);return r?JSON.parse(r):def;}catch{return def;}}
+function saveJ(key,val){try{localStorage.setItem(key,JSON.stringify(val));}catch{}}
+
+const css = `
+  .qmc-root{min-height:100vh;background:#0a0a0f;color:#fff;font-family:'Rajdhani',sans-serif;}
+  .orbitron{font-family:'Orbitron',sans-serif;}
+  .hero-bg{position:fixed;inset:0;pointer-events:none;z-index:0;background:radial-gradient(ellipse at 20% 50%,#1a0a3e 0%,transparent 60%),radial-gradient(ellipse at 80% 20%,#0a1a3e 0%,transparent 50%),radial-gradient(ellipse at 60% 80%,#1a0a0a 0%,transparent 50%);}
+  .hero-lines{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;opacity:0.07;background-image:repeating-linear-gradient(90deg,#f1c40f 0,#f1c40f 1px,transparent 1px,transparent 80px),repeating-linear-gradient(0deg,#f1c40f 0,#f1c40f 1px,transparent 1px,transparent 80px);}
+  .content{position:relative;z-index:1;}
+  .card{background:linear-gradient(135deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02));border:1px solid rgba(255,255,255,0.08);backdrop-filter:blur(10px);border-radius:16px;}
+  .card-gold{border-color:rgba(241,196,15,0.3);}
+  .btn-primary{background:linear-gradient(135deg,#f1c40f,#e67e22);color:#0a0a0f;border:none;border-radius:12px;font-family:'Orbitron',sans-serif;font-weight:700;font-size:15px;cursor:pointer;transition:all 0.2s;letter-spacing:1px;box-shadow:0 4px 20px rgba(241,196,15,0.4);}
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 6px 28px rgba(241,196,15,0.6);}
+  .btn-primary:disabled{background:#333;color:#666;box-shadow:none;cursor:not-allowed;transform:none;}
+  .btn-premium{background:linear-gradient(135deg,#9b59b6,#6c3483);color:#fff;border:none;border-radius:12px;font-family:'Orbitron',sans-serif;font-weight:700;font-size:14px;cursor:pointer;transition:all 0.2s;letter-spacing:1px;box-shadow:0 4px 20px rgba(155,89,182,0.4);}
+  .btn-premium:hover{transform:translateY(-2px);box-shadow:0 6px 28px rgba(155,89,182,0.6);}
+  .btn-mode{flex:1;padding:12px 0;border-radius:10px;border:2px solid #333;background:rgba(255,255,255,0.03);color:#aaa;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:15px;cursor:pointer;transition:all 0.2s;}
+  .btn-mode.active{border-color:#f1c40f;background:rgba(241,196,15,0.1);color:#f1c40f;}
+  .btn-mode.disabled-free{opacity:0.4;cursor:not-allowed;}
+  .btn-mode:hover:not(.active):not(.disabled-free){border-color:#555;color:#fff;}
+  .opt-btn{padding:14px 12px;border-radius:12px;border:2px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.03);color:#ddd;font-family:'Rajdhani',sans-serif;font-weight:600;font-size:15px;cursor:pointer;transition:all 0.2s;text-align:left;width:100%;display:flex;align-items:center;gap:10px;}
+  .opt-btn:hover:not(:disabled){border-color:rgba(241,196,15,0.5);background:rgba(241,196,15,0.07);color:#fff;transform:translateX(3px);}
+  .opt-btn.correct{border-color:#2ecc71;background:rgba(46,204,113,0.12);color:#2ecc71;}
+  .opt-btn.wrong{border-color:#e74c3c;background:rgba(231,76,60,0.12);color:#e74c3c;}
+  .opt-btn:disabled{cursor:default;transform:none;}
+  .opt-label{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;background:rgba(241,196,15,0.15);color:#f1c40f;font-weight:700;font-size:13px;flex-shrink:0;}
+  .opt-btn.correct .opt-label{background:rgba(46,204,113,0.2);color:#2ecc71;}
+  .opt-btn.wrong .opt-label{background:rgba(231,76,60,0.2);color:#e74c3c;}
+  .timer-ring{transform:rotate(-90deg);}
+  .timer-ring circle{transition:stroke-dashoffset 1s linear;}
+  .score-bar-wrap{background:rgba(255,255,255,0.06);border-radius:4px;height:4px;margin-top:3px;}
+  .score-bar-fill{height:4px;border-radius:4px;transition:width 0.6s ease;}
+  .xp-bar-wrap{background:rgba(255,255,255,0.06);border-radius:4px;height:6px;}
+  .xp-bar-fill{height:6px;border-radius:4px;background:linear-gradient(90deg,#9b59b6,#f1c40f);transition:width 0.8s ease;}
+  .pulse{animation:pulse 1s infinite;}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+  .fade-in{animation:fadeIn 0.4s ease;}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .pop-in{animation:popIn 0.4s cubic-bezier(0.175,0.885,0.32,1.275);}
+  @keyframes popIn{from{opacity:0;transform:scale(0.5)}to{opacity:1;transform:scale(1)}}
+  .streak-badge{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;font-family:'Orbitron',sans-serif;font-size:12px;font-weight:700;}
+  .podium-item{display:flex;align-items:center;gap:14px;padding:12px 0;}
+  .podium-item:not(:last-child){border-bottom:1px solid rgba(255,255,255,0.07);}
+  input[type=text]{width:100%;padding:11px 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);color:#fff;font-family:'Rajdhani',sans-serif;font-size:16px;outline:none;transition:border-color 0.2s;}
+  input[type=text]:focus{border-color:rgba(241,196,15,0.5);}
+  input[type=text]::placeholder{color:#555;}
+  .tag{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;letter-spacing:1px;font-weight:700;text-transform:uppercase;}
+  .tag-gold{background:rgba(241,196,15,0.15);color:#f1c40f;border:1px solid rgba(241,196,15,0.3);}
+  .tag-green{background:rgba(46,204,113,0.15);color:#2ecc71;border:1px solid rgba(46,204,113,0.3);}
+  .tag-premium{background:rgba(155,89,182,0.2);color:#c39bd3;border:1px solid rgba(155,89,182,0.4);}
+  .tag-streak{background:rgba(231,76,60,0.2);color:#e74c3c;border:1px solid rgba(231,76,60,0.4);}
+  .divider{height:1px;background:rgba(255,255,255,0.07);margin:14px 0;}
+  .num-btn{flex:1;padding:9px 0;border-radius:8px;border:2px solid #333;background:rgba(255,255,255,0.03);color:#aaa;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:16px;cursor:pointer;transition:all 0.2s;}
+  .num-btn.active{border-color:#f1c40f;background:rgba(241,196,15,0.1);color:#f1c40f;}
+  .btn-ghost{background:transparent;border:1px solid rgba(255,255,255,0.15);color:#aaa;border-radius:10px;font-family:'Rajdhani',sans-serif;font-weight:600;font-size:14px;cursor:pointer;transition:all 0.2s;padding:10px 20px;}
+  .btn-ghost:hover{border-color:rgba(241,196,15,0.4);color:#f1c40f;}
+  .btn-danger{background:transparent;border:1px solid rgba(231,76,60,0.3);color:#e74c3c;border-radius:10px;font-family:'Rajdhani',sans-serif;font-weight:600;font-size:13px;cursor:pointer;transition:all 0.2s;padding:8px 16px;}
+  .btn-danger:hover{background:rgba(231,76,60,0.1);}
+  .lock-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;background:rgba(155,89,182,0.2);color:#c39bd3;border:1px solid rgba(155,89,182,0.3);border-radius:20px;padding:2px 8px;margin-left:6px;}
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:100;display:flex;align-items:center;justify-content:center;padding:20px;}
+  .modal{background:#12121e;border:1px solid rgba(155,89,182,0.4);border-radius:20px;padding:28px;max-width:420px;width:100%;max-height:90vh;overflow-y:auto;}
+  .achievement-card{display:flex;align-items:center;gap:12px;padding:10px;border-radius:12px;border:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.03);margin-bottom:8px;}
+  .achievement-card.unlocked{border-color:rgba(241,196,15,0.3);background:rgba(241,196,15,0.05);}
+  .notif{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:200;padding:12px 20px;border-radius:14px;font-family:'Orbitron',sans-serif;font-size:13px;font-weight:700;white-space:nowrap;animation:notifAnim 3s ease forwards;}
+  @keyframes notifAnim{0%{opacity:0;transform:translateX(-50%) translateY(-20px)}15%{opacity:1;transform:translateX(-50%) translateY(0)}80%{opacity:1}100%{opacity:0;transform:translateX(-50%) translateY(-10px)}}
+  .compare-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center;font-size:13px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.06);}
+  .compare-row.header{font-size:11px;color:#aaa;letter-spacing:1px;font-weight:700;}
+  .api-input{width:100%;padding:11px 14px;border-radius:10px;border:1px solid rgba(241,196,15,0.3);background:rgba(241,196,15,0.05);color:#fff;font-family:'Rajdhani',sans-serif;font-size:14px;outline:none;margin-bottom:8px;}
+  .api-input::placeholder{color:#555;}
+`;
+
+function App() {
+  const [screen, setScreen] = useState("setup");
+  const [apiKey, setApiKey] = useState(()=>loadJ("qmc-apikey",""));
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [isPremium, setIsPremium] = useState(()=>loadJ("qmc-premium",false));
+  const [showUpgrade, setShowUpgrade] = useState(false);
+  const [showAchievements, setShowAchievements] = useState(false);
+  const [mode, setMode] = useState("ai");
+  const [numPlayers, setNumPlayers] = useState(2);
+  const [playerNames, setPlayerNames] = useState(["","","",""]);
+  const [aiName] = useState(AI_NAMES[Math.floor(Math.random()*AI_NAMES.length)]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [history, setHistory] = useState(()=>loadJ("qmc-history",[]));
+  const [xp, setXp] = useState(()=>loadJ("qmc-xp",0));
+  const [unlockedAchievements, setUnlockedAchievements] = useState(()=>loadJ("qmc-achievements",[]));
+  const [notifications, setNotifications] = useState([]);
+  const [questions, setQuestions] = useState([]);
+  const [round, setRound] = useState(0);
+  const [scores, setScores] = useState([]);
+  const [timer, setTimer] = useState(TIMER_MAX);
+  const [answered, setAnswered] = useState([]);
+  const [revealed, setRevealed] = useState(false);
+  const [roundPts, setRoundPts] = useState([]);
+  const [currentPlayer, setCurrentPlayer] = useState(0);
+  const [aiAnswered, setAiAnswered] = useState(null);
+  const [lastResult, setLastResult] = useState(null);
+  const [streak, setStreak] = useState(0);
+  const [maxStreak, setMaxStreak] = useState(0);
+  const [multiplier, setMultiplier] = useState(1);
+  const [newlyUnlocked, setNewlyUnlocked] = useState([]);
+  const [xpGained, setXpGained] = useState(0);
+
+  const timerRef = useRef(null);
+  const revealedRef = useRef(false);
+  const answeredRef = useRef([]);
+  const timerValRef = useRef(TIMER_MAX);
+  const aiAnsweredRef = useRef(null);
+  const streakRef = useRef(0);
+  const startTimeRef = useRef(null);
+
+  const ROUNDS = isPremium ? ROUNDS_PREMIUM : ROUNDS_FREE;
+  const playerCount = mode==="ai"?2:numPlayers;
+  const players = mode==="ai"
+    ?[playerNames[0]||"Jugador 1",aiName]
+    :Array.from({length:numPlayers},(_,i)=>playerNames[i]||`Jugador ${i+1}`);
+
+  function addNotif(text,color="#f1c40f",bg="#1a1a0a"){
+    const id=Date.now();
+    setNotifications(n=>[...n,{id,text,color,bg}]);
+    setTimeout(()=>setNotifications(n=>n.filter(x=>x.id!==id)),3200);
+  }
+
+  function unlockAchievement(id){
+    setUnlockedAchievements(prev=>{
+      if(prev.includes(id))return prev;
+      const updated=[...prev,id]; saveJ("qmc-achievements",updated);
+      const ach=ACHIEVEMENTS.find(a=>a.id===id);
+      if(ach){playAchievement();addNotif(`${ach.icon} Logro: ${ach.name}`,"#f1c40f","#1a1500");}
+      return updated;
+    });
+    setNewlyUnlocked(p=>p.includes(id)?p:[...p,id]);
+  }
+
+  function addXp(amount){
+    setXp(prev=>{
+      const oldLv=getLevel(prev),newXp=prev+amount,newLv=getLevel(newXp);
+      if(newLv.name!==oldLv.name){playLevelUp();addNotif(`${newLv.icon} ¡Subiste a ${newLv.name}!`,"#c39bd3","#130a1a");}
+      saveJ("qmc-xp",newXp); return newXp;
+    });
+  }
+
+  function stopTimer(){if(timerRef.current){clearInterval(timerRef.current);timerRef.current=null;}}
+
+  const doReveal=useCallback((fa,ft,cs,cq,cr)=>{
+    if(revealedRef.current)return;
+    revealedRef.current=true; stopTimer();
+    const q=cq[cr],n=mode==="ai"?2:numPlayers,pts=Array(n).fill(0);
+    const humanCorrect=fa[0]===q.ans&&fa[0]!==null;
+    const elapsed=(Date.now()-startTimeRef.current)/1000;
+    if(humanCorrect){
+      streakRef.current+=1; setStreak(streakRef.current); setMaxStreak(p=>Math.max(p,streakRef.current));
+      const mult=streakRef.current>=5?3:streakRef.current>=3?2:1; setMultiplier(mult);
+      if(streakRef.current===3){playStreak();addNotif("🔥 ¡Racha x3! Multiplicador x2","#e74c3c","#1a0a0a");}
+      if(streakRef.current===5){playStreak();addNotif("💥 ¡Racha x5! Multiplicador x3","#e74c3c","#1a0a0a");}
+      if(elapsed<3)unlockAchievement("speed");
+      if(streakRef.current>=3)unlockAchievement("streak3");
+      if(streakRef.current>=5)unlockAchievement("streak5");
+    }else{streakRef.current=0;setStreak(0);setMultiplier(1);}
+    fa.forEach((a,i)=>{
+      if(a!==null&&a===q.ans){
+        const base=Math.max(100,Math.round((ft/TIMER_MAX)*MAX_PTS));
+        const mult=i===0?(streakRef.current>=5?3:streakRef.current>=3?2:1):1;
+        pts[i]=base*mult;
+      }
+    });
+    setRoundPts(pts); setRevealed(true);
+    setScores(prev=>prev.map((s,i)=>s+pts[i]));
+  },[mode,numPlayers]);
+
+  async function fetchQuestions(premium) {
+    setLoading(true); setError("");
+    try {
+      const used = loadJ("qmc-used-qs", []);
+      const available = ALL_QUESTIONS.filter(q => !used.includes(q.q));
+      const pool = available.length >= ROUNDS ? available : ALL_QUESTIONS;
+      const shuffled = [...pool].sort(() => Math.random() - 0.5);
+      const selected = shuffled.slice(0, ROUNDS);
+      const newUsed = [...used, ...selected.map(q => q.q)].slice(-100);
+      saveJ("qmc-used-qs", newUsed);
+      setLoading(false);
+      return selected;
+    } catch { setError("Error al cargar preguntas."); setLoading(false); return null; }
+  }
+
+  async function startGame(){
+    playRevEngine();
+    const qs=await fetchQuestions(isPremium);
+    if(!qs)return;
+    setQuestions(qs); setScores(Array(playerCount).fill(0));
+    setStreak(0);setMaxStreak(0);setMultiplier(1);setNewlyUnlocked([]);setXpGained(0);
+    streakRef.current=0;
+    initRound(qs,0,Array(playerCount).fill(0)); setScreen("game");
+  }
+
+  function initRound(qs,r,sc){
+    stopTimer(); revealedRef.current=false;
+    const ea=Array(mode==="ai"?2:numPlayers).fill(null);
+    answeredRef.current=ea; aiAnsweredRef.current=null; timerValRef.current=TIMER_MAX;
+    startTimeRef.current=Date.now();
+    setRound(r);setAnswered(ea);setRevealed(false);setRoundPts([]);setTimer(TIMER_MAX);setCurrentPlayer(0);setAiAnswered(null);
+    timerRef.current=setInterval(()=>{
+      timerValRef.current-=1; setTimer(timerValRef.current);
+      if(timerValRef.current<=5&&timerValRef.current>0)playUrgent();
+      else if(timerValRef.current>5)playTick();
+      if(timerValRef.current<=0){stopTimer();if(!revealedRef.current)doReveal(answeredRef.current,0,sc,qs,r);}
+    },1000);
+    if(mode==="ai"){
+      const delay=(3+Math.random()*7)*1000;
+      setTimeout(()=>{
+        if(revealedRef.current||aiAnsweredRef.current!==null)return;
+        const correct=Math.random()<0.7;
+        const ans=correct?qs[r].ans:(qs[r].ans+1+Math.floor(Math.random()*3))%4;
+        aiAnsweredRef.current=ans; setAiAnswered(ans);
+        const updated=[...answeredRef.current]; updated[1]=ans;
+        answeredRef.current=updated; setAnswered([...updated]);
+        if(updated[0]!==null)doReveal(updated,timerValRef.current,sc,qs,r);
+      },delay);
+    }
+  }
+
+  function handleAnswer(optIdx){
+    if(revealedRef.current)return;
+    const pIdx=mode==="multi"?currentPlayer:0;
+    if(answeredRef.current[pIdx]!==null)return;
+    const updated=[...answeredRef.current]; updated[pIdx]=optIdx;
+    answeredRef.current=updated; setAnswered([...updated]);
+    if(mode==="ai"){if(updated[1]!==null)doReveal(updated,timerValRef.current,scores,questions,round);}
+    else{const next=pIdx+1;if(next<numPlayers)setCurrentPlayer(next);else doReveal(updated,timerValRef.current,scores,questions,round);}
+  }
+
+  useEffect(()=>{
+    if(!revealed||!questions[round])return;
+    const h=answered[0];
+    if(h===null)playWrong(); else if(h===questions[round].ans)playCorrect(); else playWrong();
+  },[revealed]);
+
+  async function nextRound(){
+    playClick();
+    const nextR=round+1;
+    if(nextR>=ROUNDS){
+      stopTimer();
+      const sorted=players.map((p,i)=>({name:p,score:scores[i],color:COLORS[i],isAi:mode==="ai"&&i===1})).sort((a,b)=>b.score-a.score);
+      const winner=sorted[0];
+      if(!winner.isAi)unlockAchievement("beat_ai");
+      unlockAchievement("first_win");
+      const earnedXp=Math.round((scores[0]||0)/10)+(maxStreak*20);
+      setXpGained(earnedXp); addXp(earnedXp);
+      if(!winner.isAi){
+        const newEntry={name:winner.name,score:winner.score,date:new Date().toLocaleDateString("es-ES")};
+        const updated=[newEntry,...history].slice(0,10);
+        setHistory(updated); saveJ("qmc-history",updated);
+        const wins=updated.filter(e=>e.name===winner.name).length;
+        if(wins>=3)unlockAchievement("win3");
+      }
+      setLastResult({sorted,winner}); playVictory(); setScreen("result");
+    }else initRound(questions,nextR,scores);
+  }
+
+  function saveApiKey(){
+    if(!apiKeyInput.startsWith("sk-ant-")){setError("La clave debe empezar por sk-ant-");return;}
+    saveJ("qmc-apikey",apiKeyInput); setApiKey(apiKeyInput); setError(""); setScreen("setup");
+  }
+
+  function activatePremium(){playClick();setIsPremium(true);saveJ("qmc-premium",true);setShowUpgrade(false);playVictory();}
+  function goToHistory(){playClick();setScreen("history");}
+  function goToSetup(){playClick();stopTimer();setScreen("setup");setQuestions([]);setScores([]);setRound(0);setAnswered([]);setRevealed(false);setRoundPts([]);revealedRef.current=false;streakRef.current=0;setStreak(0);setMultiplier(1);}
+  function clearHistory(){playClick();saveJ("qmc-history",[]);setHistory([]);}
+  useEffect(()=>()=>stopTimer(),[]);
+
+  const q=questions[round];
+  const timerPct=timer/TIMER_MAX;
+  const circumference=2*Math.PI*18;
+  const timerColor=timer<6?"#e74c3c":timer<11?"#e67e22":"#2ecc71";
+  const curLevel=getLevel(xp);
+  const nextLv=getNextLevel(xp);
+  const prog=xpProgress(xp);
+  const multColor=multiplier>=3?"#e74c3c":multiplier>=2?"#e67e22":"#2ecc71";
+
+  const Notifs=()=>notifications.map(n=>(
+    <div key={n.id} className="notif" style={{background:n.bg,color:n.color,border:`1px solid ${n.color}44`}}>{n.text}</div>
+  ));
+
+  const UpgradeModal=()=>(
+    <div className="modal-overlay" onClick={()=>setShowUpgrade(false)}>
+      <div className="modal fade-in" onClick={e=>e.stopPropagation()}>
+        <div style={{textAlign:"center",marginBottom:20}}>
+          <div style={{fontSize:44,marginBottom:8}}>⭐</div>
+          <div className="orbitron" style={{fontSize:20,fontWeight:900,background:"linear-gradient(135deg,#9b59b6,#f1c40f)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>PREMIUM</div>
+        </div>
+        <div style={{marginBottom:20}}>
+          <div className="compare-row header"><span>FUNCIÓN</span><span>🆓 FREE</span><span>⭐ PREMIUM</span></div>
+          {[["Rondas","3","10"],["Dificultad","Media","Alta"],["Multijugador","❌","✅"],["Ranking","❌","✅"]].map(([f,fr,pr])=>(
+            <div key={f} className="compare-row"><span style={{color:"#aaa",textAlign:"left"}}>{f}</span><span style={{color:"#666"}}>{fr}</span><span style={{color:"#c39bd3"}}>{pr}</span></div>
+          ))}
+        </div>
+        <button className="btn-premium" onClick={activatePremium} style={{width:"100%",padding:"14px 0",fontSize:16,marginBottom:10}}>🏁 ACTIVAR PREMIUM — 2,99€/mes</button>
+        <p style={{fontSize:11,color:"#444",textAlign:"center"}}>(Demo: activa Premium sin cobro real)</p>
+        <button className="btn-ghost" onClick={()=>setShowUpgrade(false)} style={{width:"100%",marginTop:10,padding:"10px 0"}}>Ahora no</button>
+      </div>
+    </div>
+  );
+
+  const AchievementsModal=()=>(
+    <div className="modal-overlay" onClick={()=>setShowAchievements(false)}>
+      <div className="modal fade-in" onClick={e=>e.stopPropagation()}>
+        <div style={{textAlign:"center",marginBottom:16}}>
+          <div style={{fontSize:32,marginBottom:6}}>🏅</div>
+          <div className="orbitron" style={{fontSize:16,fontWeight:900,color:"#f1c40f"}}>LOGROS</div>
+          <div style={{color:"#aaa",fontSize:13,marginTop:4}}>{unlockedAchievements.length}/{ACHIEVEMENTS.length} desbloqueados</div>
+        </div>
+        {ACHIEVEMENTS.map(a=>{
+          const unlocked=unlockedAchievements.includes(a.id);
+          return(
+            <div key={a.id} className={`achievement-card${unlocked?" unlocked":""}`}>
+              <div style={{fontSize:26,opacity:unlocked?1:0.25}}>{a.icon}</div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:14,color:unlocked?"#f1c40f":"#555"}}>{a.name}</div>
+                <div style={{fontSize:12,color:unlocked?"#aaa":"#444"}}>{a.desc}</div>
+              </div>
+              {unlocked&&<span style={{color:"#2ecc71",fontSize:16}}>✅</span>}
+            </div>
+          );
+        })}
+        <button className="btn-ghost" onClick={()=>setShowAchievements(false)} style={{width:"100%",marginTop:12,padding:"10px 0"}}>Cerrar</button>
+      </div>
+    </div>
+  );
+
+  // ── API KEY SCREEN ──
+  if(screen==="apikey") return(
+    <div className="qmc-root">
+      <style>{css}</style>
+      <div className="hero-bg"/><div className="hero-lines"/>
+      <div className="content" style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}>
+        <div style={{fontSize:52,marginBottom:8,textAlign:"center"}}>🏎️</div>
+        <div className="orbitron" style={{fontSize:22,fontWeight:900,background:"linear-gradient(135deg,#f1c40f,#e67e22)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",letterSpacing:2,textAlign:"center"}}>QUIZ MOTOR CHALLENGE</div>
+        <div style={{color:"#aaa",fontSize:13,marginTop:4,marginBottom:28,textAlign:"center"}}>Introduce tu API Key de Anthropic para empezar</div>
+        <div className="card card-gold" style={{width:"100%",maxWidth:420,padding:28}}>
+          <div style={{fontSize:11,color:"#aaa",letterSpacing:2,marginBottom:10}}>API KEY DE ANTHROPIC</div>
+          <input className="api-input" type="password" value={apiKeyInput} onChange={e=>setApiKeyInput(e.target.value)} placeholder="sk-ant-api03-..." onKeyDown={e=>e.key==="Enter"&&saveApiKey()}/>
+          <p style={{fontSize:12,color:"#555",marginBottom:18,lineHeight:1.5}}>
+            Consigue tu clave gratis en <b style={{color:"#f1c40f"}}>console.anthropic.com</b> → API Keys → Create Key
+          </p>
+          <button className="btn-primary" onClick={saveApiKey} style={{width:"100%",padding:"14px 0"}}>🏁 ENTRAR AL JUEGO</button>
+          {error&&<p style={{color:"#e74c3c",marginTop:10,textAlign:"center",fontSize:13}}>{error}</p>}
+          <div className="divider"/>
+          <p style={{fontSize:11,color:"#444",textAlign:"center"}}>🔒 Tu clave se guarda solo en tu dispositivo</p>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── SETUP ──
+  if(screen==="setup") return(
+    <div className="qmc-root">
+      <style>{css}</style>
+      <Notifs/>
+      {showUpgrade&&<UpgradeModal/>}
+      {showAchievements&&<AchievementsModal/>}
+      <div className="hero-bg"/><div className="hero-lines"/>
+      <div className="content" style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}>
+        <div style={{textAlign:"center",marginBottom:18}}>
+          <div style={{fontSize:50,marginBottom:6}}>🏎️</div>
+          <div className="orbitron" style={{fontSize:24,fontWeight:900,background:"linear-gradient(135deg,#f1c40f,#e67e22)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",letterSpacing:2}}>QUIZ MOTOR</div>
+          <div className="orbitron" style={{fontSize:12,color:"#f1c40f",letterSpacing:6,opacity:0.7}}>CHALLENGE</div>
+        </div>
+        <div className="card" style={{width:"100%",maxWidth:420,padding:"12px 18px",marginBottom:12}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <div style={{fontSize:26}}>{curLevel.icon}</div>
+              <div>
+                <div className="orbitron" style={{fontSize:13,color:"#f1c40f",fontWeight:700}}>{curLevel.name}</div>
+                <div style={{fontSize:11,color:"#666"}}>{xp} XP</div>
+              </div>
+            </div>
+            <button className="btn-ghost" onClick={()=>{playClick();setShowAchievements(true);}} style={{padding:"6px 12px",fontSize:12}}>🏅 {unlockedAchievements.length}/{ACHIEVEMENTS.length}</button>
+          </div>
+          <div className="xp-bar-wrap"><div className="xp-bar-fill" style={{width:`${prog}%`}}/></div>
+          {nextLv&&<div style={{fontSize:11,color:"#555",marginTop:4,textAlign:"right"}}>{nextLv.min-xp} XP para {nextLv.icon} {nextLv.name}</div>}
+        </div>
+        <div className="card card-gold" style={{width:"100%",maxWidth:420,padding:22}}>
+          <div style={{fontSize:11,color:"#aaa",letterSpacing:2,marginBottom:10}}>MODO</div>
+          <div style={{display:"flex",gap:10,marginBottom:18}}>
+            <button className={`btn-mode${mode==="ai"?" active":""}`} onClick={()=>{playClick();setMode("ai");}}>🤖 1 vs IA</button>
+            <button className={`btn-mode${mode==="multi"?" active":""}${!isPremium?" disabled-free":""}`} onClick={()=>{playClick();if(!isPremium)setShowUpgrade(true);else setMode("multi");}}>
+              👥 Multi {!isPremium&&<span className="lock-badge">🔒</span>}
+            </button>
+          </div>
+          {mode==="multi"&&isPremium&&(
+            <div style={{marginBottom:18}}>
+              <div style={{fontSize:11,color:"#aaa",letterSpacing:2,marginBottom:10}}>Nº JUGADORES</div>
+              <div style={{display:"flex",gap:8}}>
+                {[2,3,4].map(n=><button key={n} className={`num-btn${numPlayers===n?" active":""}`} onClick={()=>{playClick();setNumPlayers(n);}}>{n}</button>)}
+              </div>
+            </div>
+          )}
+          <div style={{fontSize:11,color:"#aaa",letterSpacing:2,marginBottom:10}}>PILOTOS</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:18}}>
+            {Array.from({length:mode==="ai"?1:numPlayers},(_,i)=>(
+              <div key={i} style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{width:8,height:8,borderRadius:"50%",background:COLORS[i],flexShrink:0}}/>
+                <input type="text" value={playerNames[i]} onChange={e=>{const n=[...playerNames];n[i]=e.target.value;setPlayerNames(n);}} placeholder={`Jugador ${i+1}`}/>
+              </div>
+            ))}
+            {mode==="ai"&&(
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{width:8,height:8,borderRadius:"50%",background:COLORS[1],flexShrink:0}}/>
+                <div style={{flex:1,padding:"11px 14px",borderRadius:10,border:"1px solid rgba(231,76,60,0.3)",background:"rgba(231,76,60,0.05)",color:"#e74c3c",fontSize:15,fontWeight:600}}>🤖 {aiName}</div>
+              </div>
+            )}
+          </div>
+          <div className="divider"/>
+          <div style={{display:"flex",gap:10,marginBottom:14,fontSize:12,color:"#555",flexWrap:"wrap"}}>
+            <span>⏱️ {TIMER_MAX}s</span><span>🏁 {ROUNDS} rondas</span><span>🔥 Rachas x2/x3</span>
+          </div>
+          <button className="btn-primary" onClick={startGame} disabled={loading} style={{width:"100%",padding:"14px 0",marginBottom:10}}>
+            {loading?"⏳ GENERANDO...":"🏁 ARRANCAR"}
+          </button>
+          {!isPremium&&<button className="btn-premium" onClick={()=>{playClick();setShowUpgrade(true);}} style={{width:"100%",padding:"12px 0",marginBottom:10}}>⭐ HAZTE PREMIUM — 2,99€/mes</button>}
+          <div style={{display:"flex",gap:8}}>
+            <button className="btn-ghost" onClick={goToHistory} style={{flex:1,padding:"10px 0"}}>🏆 Ranking</button>
+            <button className="btn-ghost" onClick={()=>{playClick();setScreen("apikey");}} style={{padding:"10px 14px",fontSize:12}}>🔑 API Key</button>
+          </div>
+          {error&&<p style={{color:"#e74c3c",marginTop:10,textAlign:"center",fontSize:13}}>{error}</p>}
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── GAME ──
+  if(screen==="game"&&q) return(
+    <div className="qmc-root">
+      <style>{css}</style>
+      <Notifs/>
+      <div className="hero-bg"/><div className="hero-lines"/>
+      <div className="content" style={{maxWidth:540,margin:"0 auto",padding:"14px 16px 40px"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+          <div>
+            <div className="orbitron" style={{fontSize:10,color:"#f1c40f",letterSpacing:2}}>QUIZ MOTOR {isPremium?"⭐":""}</div>
+            <div style={{fontSize:13,color:"#aaa",marginTop:1}}>Ronda <b style={{color:"#fff"}}>{round+1}</b>/{ROUNDS}</div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            {streak>0&&(
+              <div className="streak-badge pop-in" style={{background:multColor+"22",border:`1px solid ${multColor}55`,color:multColor}}>
+                🔥 {streak}{multiplier>1?` x${multiplier}`:""}
+              </div>
+            )}
+            <div style={{position:"relative",width:46,height:46}}>
+              <svg width="46" height="46" className="timer-ring">
+                <circle cx="23" cy="23" r="18" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="4"/>
+                <circle cx="23" cy="23" r="18" fill="none" stroke={timerColor} strokeWidth="4" strokeDasharray={circumference} strokeDashoffset={circumference*(1-timerPct)} strokeLinecap="round"/>
+              </svg>
+              <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Orbitron',sans-serif",fontWeight:700,fontSize:12,color:timerColor}}>{timer}</div>
+            </div>
+          </div>
+        </div>
+        <div style={{background:"rgba(255,255,255,0.06)",borderRadius:4,height:3,marginBottom:12}}>
+          <div style={{height:3,borderRadius:4,background:"linear-gradient(90deg,#f1c40f,#e67e22)",width:`${(round/ROUNDS)*100}%`,transition:"width 0.5s"}}/>
+        </div>
+        <div className="card" style={{padding:"10px 14px",marginBottom:12}}>
+          {players.map((p,i)=>(
+            <div key={i}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"3px 0"}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{width:7,height:7,borderRadius:"50%",background:COLORS[i]}}/>
+                  <span style={{fontWeight:600,fontSize:14}}>{p}{mode==="ai"&&i===1?" 🤖":""}</span>
+                </div>
+                <span className="orbitron" style={{fontSize:12,color:COLORS[i],fontWeight:700}}>{scores[i]||0}</span>
+              </div>
+              <div className="score-bar-wrap">
+                <div className="score-bar-fill" style={{background:COLORS[i],width:`${Math.min((scores[i]||0)/(ROUNDS*MAX_PTS*3)*100,100)}%`}}/>
+              </div>
+              {i<players.length-1&&<div style={{height:5}}/>}
+            </div>
+          ))}
+        </div>
+        {mode==="multi"&&!revealed&&(
+          <div className="fade-in" style={{background:COLORS[currentPlayer]+"15",border:`1px solid ${COLORS[currentPlayer]}55`,borderRadius:10,padding:"8px 14px",marginBottom:12,display:"flex",alignItems:"center",gap:10}}>
+            <div style={{width:9,height:9,borderRadius:"50%",background:COLORS[currentPlayer]}} className="pulse"/>
+            <span style={{fontWeight:700,color:COLORS[currentPlayer]}}>Turno de {players[currentPlayer]}</span>
+          </div>
+        )}
+        <div className="card card-gold fade-in" style={{padding:"18px 18px 16px",marginBottom:12}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+            <span className="tag tag-gold">Pregunta {round+1}</span>
+            {multiplier>1&&<span className="tag tag-streak">🔥 x{multiplier} activo</span>}
+          </div>
+          <div style={{fontSize:17,fontWeight:600,lineHeight:1.5,color:"#fff"}}>{q.q}</div>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:9,marginBottom:12}}>
+          {q.opts.map((opt,oi)=>{
+            let cls="opt-btn";
+            if(revealed){if(oi===q.ans)cls+=" correct";else if(answered.some(a=>a===oi&&oi!==q.ans))cls+=" wrong";}
+            const myAnswer=mode==="multi"?answered[currentPlayer]:answered[0];
+            const disabled=revealed||myAnswer!==null;
+            return(
+              <button key={oi} className={cls} disabled={disabled} onClick={()=>{if(!disabled)handleAnswer(oi);}}>
+                <div className="opt-label">{OPT_LABELS[oi]}</div>
+                <span style={{flex:1}}>{opt}</span>
+                {revealed&&oi===q.ans&&<span style={{fontSize:16}}>✅</span>}
+                {revealed&&oi!==q.ans&&answered.some(a=>a===oi)&&<span style={{fontSize:16}}>❌</span>}
+              </button>
+            );
+          })}
+        </div>
+        {mode==="ai"&&!revealed&&(
+          <div style={{textAlign:"center",fontSize:13,color:"#555",marginBottom:8}}>
+            {aiAnswered!==null?`🤖 ${aiName} ya respondió`:answered[0]!==null?`⏳ Esperando a ${aiName}...`:""}
+          </div>
+        )}
+        {revealed&&(
+          <div className="card fade-in" style={{padding:"16px 18px"}}>
+            <div style={{fontSize:11,color:"#f1c40f",letterSpacing:2,marginBottom:12}}>RESULTADOS DE LA RONDA</div>
+            {players.map((p,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{width:7,height:7,borderRadius:"50%",background:COLORS[i]}}/>
+                  <span style={{fontWeight:600}}>{p}</span>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  {roundPts[i]>0&&<span className="tag tag-green">+{roundPts[i]}{i===0&&multiplier>1?` (x${multiplier})`:""}</span>}
+                  <span style={{fontSize:16}}>{answered[i]===null?"⏰":answered[i]===q.ans?"✅":"❌"}</span>
+                </div>
+              </div>
+            ))}
+            <div className="divider"/>
+            <div style={{fontSize:13,color:"#aaa"}}>Correcta: <b style={{color:"#2ecc71"}}>{q.opts[q.ans]}</b></div>
+            <button className="btn-primary" onClick={nextRound} style={{width:"100%",padding:"12px 0",marginTop:14}}>
+              {round+1>=ROUNDS?"🏆 VER PODIO":"➡️ SIGUIENTE RONDA"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  // ── RESULT ──
+  if(screen==="result"&&lastResult){
+    const{sorted,winner}=lastResult;
+    return(
+      <div className="qmc-root">
+        <style>{css}</style>
+        <Notifs/>
+        {showUpgrade&&<UpgradeModal/>}
+        {showAchievements&&<AchievementsModal/>}
+        <div className="hero-bg"/><div className="hero-lines"/>
+        <div className="content" style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}>
+          <div style={{textAlign:"center",marginBottom:18}}>
+            <div style={{fontSize:52,marginBottom:6}}>🏆</div>
+            <div className="orbitron" style={{fontSize:20,fontWeight:900,background:"linear-gradient(135deg,#f1c40f,#e67e22)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>CARRERA FINALIZADA</div>
+            <div style={{marginTop:6,color:"#aaa",fontSize:14}}>Ganador: <b style={{color:winner.color}}>{winner.name}</b> {winner.isAi?"🤖":"🎉"}</div>
+          </div>
+          <div className="card" style={{width:"100%",maxWidth:400,padding:"12px 18px",marginBottom:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{fontSize:22}}>{curLevel.icon}</div>
+                <div>
+                  <div className="orbitron" style={{fontSize:12,color:"#f1c40f"}}>{curLevel.name}</div>
+                  <div style={{fontSize:11,color:"#666"}}>{xp} XP</div>
+                </div>
+              </div>
+              <div className="tag tag-green pop-in">+{xpGained} XP</div>
+            </div>
+            <div className="xp-bar-wrap"><div className="xp-bar-fill" style={{width:`${prog}%`}}/></div>
+            <div className="divider"/>
+            <div style={{display:"flex",gap:16,fontSize:13,color:"#aaa"}}>
+              <span>🔥 Racha máx: <b style={{color:"#e74c3c"}}>{maxStreak}</b></span>
+              <span>✅ Puntos: <b style={{color:"#2ecc71"}}>{scores[0]||0}</b></span>
+            </div>
+          </div>
+          {newlyUnlocked.length>0&&(
+            <div className="card card-gold" style={{width:"100%",maxWidth:400,padding:"12px 18px",marginBottom:12}}>
+              <div style={{fontSize:11,color:"#f1c40f",letterSpacing:2,marginBottom:10}}>🏅 LOGROS DESBLOQUEADOS</div>
+              {newlyUnlocked.map(id=>{const a=ACHIEVEMENTS.find(x=>x.id===id);return a?(
+                <div key={id} style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
+                  <span style={{fontSize:20}}>{a.icon}</span>
+                  <div><div style={{fontWeight:700,color:"#f1c40f",fontSize:14}}>{a.name}</div><div style={{fontSize:12,color:"#aaa"}}>{a.desc}</div></div>
+                </div>
+              ):null;})}
+            </div>
+          )}
+          <div className="card card-gold" style={{width:"100%",maxWidth:400,padding:"8px 20px 14px",marginBottom:14}}>
+            <div style={{fontSize:11,color:"#aaa",letterSpacing:2,padding:"12px 0 8px"}}>CLASIFICACIÓN</div>
+            {sorted.map((p,i)=>(
+              <div key={i} className="podium-item">
+                <span style={{fontSize:26,width:32}}>{MEDALS[i]}</span>
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:700,fontSize:15,color:p.color}}>{p.name}{p.isAi?" 🤖":""}</div>
+                  <div style={{background:"rgba(255,255,255,0.06)",borderRadius:4,height:4,marginTop:4}}>
+                    <div style={{height:4,borderRadius:4,background:p.color,width:`${(p.score/(sorted[0].score||1))*100}%`,transition:"width 1s"}}/>
+                  </div>
+                </div>
+                <div className="orbitron" style={{fontSize:14,color:p.color,fontWeight:700}}>{p.score}</div>
+              </div>
+            ))}
+          </div>
+          {!isPremium&&(
+            <div style={{width:"100%",maxWidth:400,padding:"12px 16px",borderRadius:14,border:"1px solid rgba(155,89,182,0.3)",background:"rgba(155,89,182,0.08)",textAlign:"center",marginBottom:12}}>
+              <div style={{fontSize:13,color:"#c39bd3",marginBottom:8}}>🔒 ¿Quieres más rondas y multijugador?</div>
+              <button className="btn-premium" onClick={()=>{playClick();setShowUpgrade(true);}} style={{padding:"10px 22px"}}>⭐ Ver Premium</button>
+            </div>
+          )}
+          <div style={{display:"flex",gap:8,width:"100%",maxWidth:400}}>
+            <button className="btn-primary" onClick={goToSetup} style={{flex:1,padding:"12px 0"}}>🔄 NUEVA</button>
+            <button className="btn-ghost" onClick={goToHistory} style={{flex:1}}>🏆</button>
+            <button className="btn-ghost" onClick={()=>{playClick();setShowAchievements(true);}} style={{flex:1}}>🏅</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── HISTORY ──
+  if(screen==="history"){
+    const agg={};
+    history.forEach(e=>{
+      if(!agg[e.name])agg[e.name]={name:e.name,wins:0,best:0,last:e.date};
+      agg[e.name].wins++;if(e.score>agg[e.name].best)agg[e.name].best=e.score;agg[e.name].last=e.date;
+    });
+    const ranked=Object.values(agg).sort((a,b)=>b.wins-a.wins||b.best-a.best);
+    return(
+      <div className="qmc-root">
+        <style>{css}</style>
+        {showUpgrade&&<UpgradeModal/>}
+        <div className="hero-bg"/><div className="hero-lines"/>
+        <div className="content" style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}>
+          <div style={{textAlign:"center",marginBottom:18}}>
+            <div style={{fontSize:40,marginBottom:6}}>🏆</div>
+            <div className="orbitron" style={{fontSize:18,fontWeight:900,background:"linear-gradient(135deg,#f1c40f,#e67e22)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>HALL OF FAME</div>
+          </div>
+          <div className="card card-gold" style={{width:"100%",maxWidth:440,padding:"8px 20px 14px",marginBottom:14}}>
+            {!isPremium?(
+              <div style={{textAlign:"center",padding:"24px 0"}}>
+                <div style={{fontSize:30,marginBottom:8}}>🔒</div>
+                <div style={{fontSize:14,color:"#aaa",marginBottom:14}}>El ranking es función Premium</div>
+                <button className="btn-premium" onClick={()=>{playClick();setShowUpgrade(true);}} style={{padding:"10px 22px"}}>⭐ Hazte Premium</button>
+              </div>
+            ):ranked.length===0?(
+              <div style={{textAlign:"center",padding:"24px 0",color:"#555"}}>
+                <div style={{fontSize:30,marginBottom:8}}>🏁</div>
+                <div>Aún no hay carreras registradas.</div>
+              </div>
+            ):(
+              <>
+                <div style={{display:"flex",gap:10,padding:"12px 0 8px",borderBottom:"1px solid rgba(255,255,255,0.08)",fontSize:11,color:"#555",letterSpacing:1}}>
+                  <div style={{width:24}}>#</div><div style={{flex:1}}>PILOTO</div>
+                  <div style={{width:46,textAlign:"center"}}>VIC.</div><div style={{width:54,textAlign:"right"}}>MEJOR</div>
+                </div>
+                {ranked.map((p,i)=>(
+                  <div key={p.name} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
+                    <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:11,color:"#555",width:24,textAlign:"center"}}>{i<3?MEDALS[i]:`${i+1}`}</div>
+                    <div style={{flex:1}}>
+                      <div style={{fontWeight:700,fontSize:14,color:i===0?"#f1c40f":"#fff"}}>{p.name}</div>
+                      <div style={{fontSize:11,color:"#555"}}>{p.last}</div>
+                    </div>
+                    <div style={{width:46,textAlign:"center"}}><span className="orbitron" style={{fontSize:12,color:"#f1c40f",fontWeight:700}}>{p.wins}</span></div>
+                    <div style={{width:54,textAlign:"right"}}><span className="orbitron" style={{fontSize:12,color:"#2ecc71",fontWeight:700}}>{p.best}</span></div>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+          <div style={{display:"flex",gap:8,width:"100%",maxWidth:440}}>
+            <button className="btn-ghost" onClick={goToSetup} style={{flex:1}}>← VOLVER</button>
+            {isPremium&&history.length>0&&<button className="btn-danger" onClick={clearHistory}>🗑️ Borrar</button>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
